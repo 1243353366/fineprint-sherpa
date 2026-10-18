@@ -1,0 +1,115 @@
+# Strict tool schemas YAML
+fetch_url:
+  description: "Retrieve a public HTTP/HTTPS resource with strict validation."
+  input:
+    type: object
+    required: [url]
+    properties:
+      url:
+        type: string
+        format: uri
+      maxDownloadMB:
+        type: integer
+        default: 10
+  output:
+    type: object
+    required: [final_url,status_code,content_type]
+    properties:
+      final_url: { type: string }
+      status_code: { type: integer }
+      content_type: { type: string }
+      content_ref: { type: string }
+  permission: read-only
+  max_calls_per_task: 8
+
+extract_document:
+  description: "Parse HTML or PDF and return structured passages with stable evidence IDs."
+  input:
+    type: object
+    required: [body_ref,content_type]
+    properties:
+      body_ref: { type: string }
+      content_type: { type: string }
+      ocr: { type: boolean }
+  output:
+    type: object
+    required: [title,passages]
+    properties:
+      title: { type: string }
+      passages:
+        type: array
+        items:
+          type: object
+          required: [evidence_id,text]
+          properties:
+            evidence_id: { type: string }
+            text: { type: string }
+            page_number: { type: integer }
+            heading: { type: string }
+  permission: read-only
+  max_calls_per_task: 6
+
+analyze_obligations:
+  description: "Extract obligations, rights, and restrictions from passages."
+  input:
+    type: object
+    required: [evidence_ids]
+    properties:
+      evidence_ids:
+        type: array
+        items: { type: string }
+  output:
+    type: object
+    properties:
+      obligations:
+        type: array
+        items:
+          type: object
+          properties:
+            id: { type: string }
+            text: { type: string }
+            parties: { type: array, items: { type: string } }
+            mandatory: { type: boolean }
+            evidence: { type: array, items: { type: string } }
+  permission: read-only
+  max_calls_per_task: 10
+
+calculate_costs:
+  description: "Perform deterministic arithmetic based on numeric passages and assumptions."
+  input:
+    type: object
+    properties:
+      numeric_evidence_ids:
+        type: array
+        items: { type: string }
+      scenarios:
+        type: array
+  output:
+    type: object
+    properties:
+      scenarios:
+        type: array
+  permission: read-only
+  max_calls_per_task: 4
+
+verify_claims:
+  description: "Check that claims reference existing evidence and flag contradictions."
+  input:
+    type: object
+    required: [claims]
+    properties:
+      claims:
+        type: array
+        items:
+          type: object
+          properties:
+            id: { type: string }
+            text: { type: string }
+            evidence: { type: array, items: { type: string } }
+  output:
+    type: object
+    properties:
+      results:
+        type: array
+  permission: read-only
+  max_calls_per_task: 6
