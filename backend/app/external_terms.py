@@ -1,7 +1,3 @@
-# External terms API adapter for FinePrint Sherpa
-# This module sends extracted passages to an external terms-and-conditions service
-# and retrieves evidence passages by ID. The adapter is pluggable via TERMS_API_BASE.
-
 import os
 import requests
 import logging
@@ -9,6 +5,8 @@ from typing import List, Dict
 
 TERMS_API_BASE = os.getenv("TERMS_API_BASE")  # e.g. https://terms.example.com/api
 TERMS_API_KEY = os.getenv("TERMS_API_KEY")
+# Controls whether the in-memory mock is allowed. Must be explicitly enabled in test/dev environments.
+EXTERNAL_TERMS_ALLOW_MOCK = os.getenv("EXTERNAL_TERMS_ALLOW_MOCK", "false").lower() in ("1","true","yes")
 
 logger = logging.getLogger(__name__)
 
@@ -25,14 +23,9 @@ class ExternalTermsClient:
 
     def _require_remote(self):
         if not self.base_url:
-            raise ExternalTermsError("TERMS_API_BASE not configured; external persistence is required for production")
+            raise ExternalTermsError("TERMS_API_BASE not configured; external persistence is required")
 
     def store_document(self, final_url: str, passages: List[Dict]) -> List[str]:
-        """
-        POST /documents
-        Body: { final_url, passages: [{ evidence_id, text, page_number, heading, tag }] }
-        Response: { document_id, evidence_ids: [...] }
-        """
         self._require_remote()
         endpoint = f"{self.base_url.rstrip('/')}/documents"
         payload = {"final_url": final_url, "passages": passages}
@@ -44,10 +37,6 @@ class ExternalTermsClient:
         return data.get("evidence_ids", [])
 
     def get_evidence(self, evidence_ids: List[str], final_url: str) -> Dict[str, str]:
-        """
-        GET /documents/evidence?final_url=...&ids=id1,id2
-        Response: { evidence: { evidence_id: text, ... } }
-        """
         self._require_remote()
         ids_param = ",".join(evidence_ids)
         endpoint = f"{self.base_url.rstrip('/')}/documents/evidence"
@@ -62,11 +51,10 @@ class ExternalTermsClient:
 # Mock client (in-memory) for local testing ONLY. It does not persist across restarts.
 class MockExternalTermsClient(ExternalTermsClient):
     def __init__(self):
-        super().__init__(base_url=None, api_key=None)
+        # intentionally do not call ExternalTermsClient.__init__
         self.docs = {}
 
     def store_document(self, final_url: str, passages: List[Dict]) -> List[str]:
-        # store in-memory keyed by final_url
         existing = self.docs.get(final_url, {})
         evidence_map = existing.copy()
         for p in passages:
@@ -80,8 +68,12 @@ class MockExternalTermsClient(ExternalTermsClient):
         return out
 
 # Factory
+
 def get_terms_client():
     if TERMS_API_BASE:
         return ExternalTermsClient(TERMS_API_BASE, TERMS_API_KEY)
-    logger.warning("TERMS_API_BASE not set, using in-memory mock external client (non-persistent)")
-    return MockExternalTermsClient()
+    if EXTERNAL_TERMS_ALLOW_MOCK:
+        logger.warning("TERMS_API_BASE not set, but EXTERNAL_TERMS_ALLOW_MOCK=true — using non-persistent in-memory mock (TEST MODE)")
+        return MockExternalTermsClient()
+    # Fail-closed: do not silently use a mock in production
+    raise ExternalTermsError("TERMS_API_BASE is not configured and mock usage is not allowed in this environment")
