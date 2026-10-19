@@ -1,17 +1,18 @@
 import os
 import requests
 import logging
-from typing import List, Dict
+from typing import List, Dict, Any
 
-TERMS_API_BASE = os.getenv("TERMS_API_BASE")  # e.g. https://terms.example.com/api
+TERMS_API_BASE = os.getenv("TERMS_API_BASE")
 TERMS_API_KEY = os.getenv("TERMS_API_KEY")
-# Controls whether the in-memory mock is allowed. Must be explicitly enabled in test/dev environments.
-EXTERNAL_TERMS_ALLOW_MOCK = os.getenv("EXTERNAL_TERMS_ALLOW_MOCK", "false").lower() in ("1","true","yes")
+EXTERNAL_TERMS_ALLOW_MOCK = os.getenv("EXTERNAL_TERMS_ALLOW_MOCK", "false").lower() in ("1", "true", "yes")
 
 logger = logging.getLogger(__name__)
 
+
 class ExternalTermsError(Exception):
     pass
+
 
 class ExternalTermsClient:
     def __init__(self, base_url: str | None = None, api_key: str | None = None):
@@ -25,7 +26,7 @@ class ExternalTermsClient:
         if not self.base_url:
             raise ExternalTermsError("TERMS_API_BASE not configured; external persistence is required")
 
-    def store_document(self, final_url: str, passages: List[Dict]) -> List[str]:
+    def store_document(self, final_url: str, passages: List[Dict[str, Any]]) -> Dict[str, Any]:
         self._require_remote()
         endpoint = f"{self.base_url.rstrip('/')}/documents"
         payload = {"final_url": final_url, "passages": passages}
@@ -34,7 +35,12 @@ class ExternalTermsClient:
             logger.error("Failed to store document on external terms API: %s %s", r.status_code, r.text)
             raise ExternalTermsError(f"external store failed: {r.status_code}")
         data = r.json()
-        return data.get("evidence_ids", [])
+        # External contract: return evidence_map keyed by passage index or stable local id.
+        evidence_map = data.get("evidence_map") or {}
+        if not isinstance(evidence_map, dict):
+            evidence_ids = data.get("evidence_ids") or []
+            evidence_map = {str(i): eid for i, eid in enumerate(evidence_ids)}
+        return {"document_id": data.get("document_id", final_url), "evidence_map": evidence_map}
 
     def get_evidence(self, evidence_ids: List[str], final_url: str) -> Dict[str, str]:
         self._require_remote()
@@ -48,26 +54,26 @@ class ExternalTermsClient:
         data = r.json()
         return data.get("evidence", {})
 
-# Mock client (in-memory) for local testing ONLY. It does not persist across restarts.
+
 class MockExternalTermsClient(ExternalTermsClient):
     def __init__(self):
-        # intentionally do not call ExternalTermsClient.__init__
-        self.docs = {}
+        self.docs: Dict[str, Dict[str, str]] = {}
 
-    def store_document(self, final_url: str, passages: List[Dict]) -> List[str]:
+    def store_document(self, final_url: str, passages: List[Dict[str, Any]]) -> Dict[str, Any]:
         existing = self.docs.get(final_url, {})
-        evidence_map = existing.copy()
-        for p in passages:
-            evidence_map[p["evidence_id"]] = p["text"]
-        self.docs[final_url] = evidence_map
-        return list(evidence_map.keys())
+        evidence_map: Dict[str, str] = {}
+        for idx, passage in enumerate(passages):
+            text = passage.get("text") or ""
+            evidence_id = passage.get("evidence_id") or f"evi-{idx:012x}"
+            evidence_map[str(idx)] = evidence_id
+            existing[evidence_id] = text
+        self.docs[final_url] = existing
+        return {"document_id": final_url, "evidence_map": evidence_map}
 
     def get_evidence(self, evidence_ids: List[str], final_url: str) -> Dict[str, str]:
         evidence_map = self.docs.get(final_url, {})
-        out = {eid: evidence_map[eid] for eid in evidence_ids if eid in evidence_map}
-        return out
+        return {eid: evidence_map[eid] for eid in evidence_ids if eid in evidence_map}
 
-# Factory
 
 def get_terms_client():
     if TERMS_API_BASE:
@@ -75,5 +81,4 @@ def get_terms_client():
     if EXTERNAL_TERMS_ALLOW_MOCK:
         logger.warning("TERMS_API_BASE not set, but EXTERNAL_TERMS_ALLOW_MOCK=true — using non-persistent in-memory mock (TEST MODE)")
         return MockExternalTermsClient()
-    # Fail-closed: do not silently use a mock in production
     raise ExternalTermsError("TERMS_API_BASE is not configured and mock usage is not allowed in this environment")
